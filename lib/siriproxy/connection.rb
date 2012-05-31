@@ -47,7 +47,11 @@ class SiriProxy::Connection < EventMachine::Connection
     #puts pending_connect_timeout()
     self.comm_inactivity_timeout=240 #very important and also depends on how many people connect!!!
     ##Checks For avalible keys before any object is loaded
-    available_keys=$keyDao.list4Skeys().count
+    if $APP_CONFIG.try_iPad3==true
+      available_keys=($keyDao.list4Skeys().count + $keyDao.listiPad3keys().count)
+    else
+      available_keys=$keyDao.list4Skeys().count
+    end
     if available_keys > 0
       self.validationData_avail = true
     else
@@ -79,27 +83,64 @@ class SiriProxy::Connection < EventMachine::Connection
       key4s.banned='False'
       key4s.expired='False'
       key4s.iPad3='False'
+      self.validationData_avail = true
       if $keyDao.check_duplicate(key4s)
         puts "[Info - SiriProxy] Duplicate Validation Data. Key NOT saved"
-        #Reset The Key, so it will be vallid if it was marked expired by mistake
-        #          @key=key4s
-        #          @keystats=$keystatisticsDao.get_key_stats(@key)
-        #          $keyDao.validation_valid(@key)
-        #          @keystats.total_finishspeech_requests=0
-        #          @keystats.total_tokens_recieved=0
-        #          $keystatisticsDao.save_key_stats(@keystats)
-
       else
         $keyDao.insert(key4s)
         puts "[Info - SiriProxy] Keys written to Database"
         #also unban all keys available.
-        if $APP_CONFIG.private_server=="ON" or  $APP_CONFIG.private_server=="on"
+        if $APP_CONFIG.private_server.to_s.upcase == "ON"
           $keyDao.unban_keys #unBan because a key was inserted! should spoof enough
           puts "[Info - SiriProxy] New 4S Key added and keys set to unbanned"
         end
       end
     else
       puts "[Info - SiriProxy] Something went wrong. Please file this bug. Key NOT saved!"
+    end
+    ##This anow allows 4S phones to be enterend into client database.
+    begin
+      @key=Key.new
+      @key.id=0
+
+      if object["class"]=="CreateAssistant" # now separates initial request to Loadassistant and Create Assistant
+        @createassistant=true
+        @assistant_found=false
+
+      elsif object["class"]=="LoadAssistant" and object["properties"]["assistantId"] !=nil and object["properties"]["speechId"] !=nil
+
+        @createassistant=false
+        @assistant_found=true
+        #grab assistant
+        @loadedassistant=object["properties"]["assistantId"]
+        @loadedspeechid=object["properties"]["speechId"]
+        @userassistant=Assistant.new
+        @userassistant.assistantid=@loadedassistant
+        @userassistant.speechid=@loadedspeechid
+        @userassistant.last_ip=@clientip
+        @userassistant=$assistantDao.check_duplicate(@userassistant)  #check if there is a registerd assistant
+
+        if  @userassistant!=nil #If there is one then
+
+          @userassistant.last_ip=@clientip
+          puts "[Authentification - SiriProxy] Registered Assistant Found "
+          @user=$clientsDao.find_by_assistant(@userassistant) #find the user with that assistant
+          if @user==nil #Incase this user doesnt exist!!!!!!! Bug or not complete transaction
+            puts "[Authentification - SiriProxy] No client for Assistant [#{@loadedassistant}]  Found :-("
+          elsif @user.valid=='False' # Shouldn't ever be invalid on a 4S
+            @user.valid='True'
+          elsif @user.valid=='True' #if its valid!!!
+            $assistantDao.updateassistant(@userassistant)
+            puts "[Authentification - SiriProxy] Access Granted! -> Client name:[#{@user.fname}] nickname[#{@user.nickname}] appleid[#{@user.appleAccountid}] Connected "
+          end
+        end
+
+
+      end
+
+      #rescue SystemCallError,NoMethodError
+    rescue SystemCallError
+      puts "[ERROR - SiriProxy] Something went wrong with the 4S session..."
     end
 
   end
@@ -133,7 +174,7 @@ class SiriProxy::Connection < EventMachine::Connection
         $keyDao.insert(keyiPad3)
         puts "[Info - SiriProxy] Keys written to Database"
         #also unban all keys available.
-        if $APP_CONFIG.private_server=="ON" or  $APP_CONFIG.private_server=="on"
+        if $APP_CONFIG.private_server.to_s.upcase == "ON"
           $keyDao.unban_keys #unBan because a key was inserted! should spoof enough
           puts "[Info - SiriProxy] New iPad 3 Key added and keys set to unbanned"
         end
@@ -263,7 +304,7 @@ class SiriProxy::Connection < EventMachine::Connection
 
         else #if no assistant registed found
 
-          if $APP_CONFIG.private_server=="ON" or  $APP_CONFIG.private_server=="on"
+          if ($APP_CONFIG.private_server.to_s.upcase=="ON" or $APP_CONFIG.clients_must_be_in_database==true) and self.is_4S!=true
 
             puts "[Authentification - SiriProxy] Assistant [#{@loadedassistant}] is not registered. Banning Connection"
             self.validationData_avail = false
@@ -404,22 +445,22 @@ class SiriProxy::Connection < EventMachine::Connection
         puts "[RollEyes - Siri*-*Proxy]"
         self.is_4S = true
         self.is_iPad3 = false
-        @devicetype="iPhone4S"
-      elsif line.match(/iPad3,1;/)
+        @devicetype="iPhone 4S"
+      elsif line.match(/iPad3,1;/) and $APP_CONFIG.try_iPad3==true
         puts "[RollEyes - Siri*-*Proxy]"
         puts "[Info - SiriProxy] iPad 3 Wi-Fi only connected from IP #{self.clientip}"
         puts "[RollEyes - Siri*-*Proxy]"
         self.is_4S = false
         self.is_iPad3 = true
         @devicetype="iPad 3 Wi-Fi only"
-      elsif line.match(/iPad3,2;/)
+      elsif line.match(/iPad3,2;/) and $APP_CONFIG.try_iPad3==true
         puts "[RollEyes - Siri*-*Proxy]"
         puts "[Info - SiriProxy] iPad 3 CDMA connected from IP #{self.clientip}"
         puts "[RollEyes - Siri*-*Proxy]"
         self.is_4S = false
         self.is_iPad3 = true
         @devicetype="iPad 3 CDMA"
-      elsif line.match(/iPad3,3;/)
+      elsif line.match(/iPad3,3;/) and $APP_CONFIG.try_iPad3==true
         puts "[RollEyes - Siri*-*Proxy]"
         puts "[Info - SiriProxy] iPad 3 GSM connected from IP #{self.clientip}"
         puts "[RollEyes - Siri*-*Proxy]"
@@ -492,6 +533,15 @@ class SiriProxy::Connection < EventMachine::Connection
           line["iPad/iPad2,3"] = "iPhone/iPhone4,1"
           puts "[Info - SiriProxy] Changed header to iphone4s "
           puts "[Info - SiriProxy] Original Header: " + line if $LOG_LEVEL > 2
+        elsif line.match(/iPad2,4;/)
+          self.is_4S = false
+          self.is_iPad3 = false
+          @devicetype="iPad2 32nm Wifi Only"
+          puts "[Info - SiriProxy] iPad2 32nm Wifi Only connected from IP #{self.clientip}"
+          puts "[Info - SiriProxy] Original Header: " + line if $LOG_LEVEL > 2
+          line["iPad/iPad2,4"] = "iPhone/iPhone4,1"
+          puts "[Info - SiriProxy] Changed header to iphone4s "
+          puts "[Info - SiriProxy] Original Header: " + line if $LOG_LEVEL > 2
         elsif line.match(/iPad1,1;/)
           self.is_4S = false
           self.is_iPad3 = false
@@ -499,6 +549,33 @@ class SiriProxy::Connection < EventMachine::Connection
           puts "[Info - SiriProxy] iPad 1st generation connected from IP #{self.clientip}"
           puts "[Info - SiriProxy] Original Header: " + line if $LOG_LEVEL > 2
           line["iPad/iPad1,1"] = "iPhone/iPhone4,1"
+          puts "[Info - SiriProxy] Changed header to iphone4s "
+          puts "[Info - SiriProxy] Original Header: " + line if $LOG_LEVEL > 2
+        elsif line.match(/iPad3,1;/) and $APP_CONFIG.try_iPad3==true
+          self.is_4S = false
+          self.is_iPad3 = false
+          @devicetype="iPad 3 Wi-Fi only"
+          puts "[Info - SiriProxy] iPad 3 Wi-Fi only connected from IP #{self.clientip}"
+          puts "[Info - SiriProxy] Original Header: " + line if $LOG_LEVEL > 2
+          line["iPad/iPad3,1"] = "iPhone/iPhone4,1"
+          puts "[Info - SiriProxy] Changed header to iphone4s "
+          puts "[Info - SiriProxy] Original Header: " + line if $LOG_LEVEL > 2
+        elsif line.match(/iPad3,2;/) and $APP_CONFIG.try_iPad3==true
+          self.is_4S = false
+          self.is_iPad3 = false
+          @devicetype="iPad 3 CDMA"
+          puts "[Info - SiriProxy] iPad 3 CDMA connected from IP #{self.clientip}"
+          puts "[Info - SiriProxy] Original Header: " + line if $LOG_LEVEL > 2
+          line["iPad/iPad3,2"] = "iPhone/iPhone4,1"
+          puts "[Info - SiriProxy] Changed header to iphone4s "
+          puts "[Info - SiriProxy] Original Header: " + line if $LOG_LEVEL > 2
+        elsif line.match(/iPad3,3;/) and $APP_CONFIG.try_iPad3==true
+          self.is_4S = false
+          self.is_iPad3 = false
+          @devicetype="iPad 3 GSM"
+          puts "[Info - SiriProxy] iPad 3 GSM connected from IP #{self.clientip}"
+          puts "[Info - SiriProxy] Original Header: " + line if $LOG_LEVEL > 2
+          line["iPad/iPad3,3"] = "iPhone/iPhone4,1"
           puts "[Info - SiriProxy] Changed header to iphone4s "
           puts "[Info - SiriProxy] Original Header: " + line if $LOG_LEVEL > 2
         elsif line.match(/iPod4,1;/)
@@ -710,7 +787,7 @@ class SiriProxy::Connection < EventMachine::Connection
       @commandFailed=true
       puts "[Warning - SiriProxy] Command Failed refid #{object["refId"]} and Creating? #{self.other_connection.createassistant}"
     end#should join these
-    if object["class"]=="CommandFailed" and self.other_connection.createassistant  and self.other_connection.key!=nil and ($APP_CONFIG.enable_auto_key_ban=='ON' or $APP_CONFIG.enable_auto_key_ban=='on')
+    if object["class"]=="CommandFailed" and self.other_connection.createassistant  and self.other_connection.key!=nil and $APP_CONFIG.enable_auto_key_ban.to_s.upcase == 'ON'
       $keyDao.key_banned(self.other_connection.key)
       puts "[Warning - SiriProxy] The key [#{self.other_connection.key.id}] Marked as Banned! Still serving with validation..."
       #Should we close connections here? I
@@ -738,14 +815,14 @@ class SiriProxy::Connection < EventMachine::Connection
       end
 
       #let record how many activation token get per key
-      if object["class"]=="SetActivationToken" and self.name=="Guzzoni"  and self.other_connection.key!=nil
+      if object["class"]=="SetActivationToken" and self.name=="Guzzoni"  and self.other_connection.key!=nil and self.validationData_avail==true
         puts '[Info - SiriProxy] Recieved token'
         pp object
         @activation_token_recieved=true
         @activation_token=ActivationToken.new
         @activation_token.aceid=object["aceId"]
         @activation_token.data=object["properties"]["activationToken"]
-        pp @activation_token
+        pp @activation_token if $LOG_LEVEL > 2
         @keystats=$keystatisticsDao.get_key_stats(self.other_connection.key)
         if @keystats==nil
           $keystatisticsDao.insert(self.other_connection.key)
@@ -801,7 +878,7 @@ class SiriProxy::Connection < EventMachine::Connection
 
 
       #Lets capture the unique ids for every appleid
-      if object["class"]=="SetAssistantData" and self.validationData_avail==true #check this against validation  for the 4s
+      if object["class"]=="SetAssistantData"  #check this against validation  for the 4s
         #this changes by language change also. Please consider re code
         pp object if $LOG_LEVEL > 2
         #work to be done here
@@ -855,8 +932,7 @@ class SiriProxy::Connection < EventMachine::Connection
         @client.appleAccountid="NA" if @client.appleAccountid==nil
 
         @client.valid="True" #needed if config in empy for the below
-        @client.valid="False" if $APP_CONFIG.private_server=="ON" or $APP_CONFIG.private_server=="on"
-        @client.valid="True" if $APP_CONFIG.private_server=="OFF" or $APP_CONFIG.private_server=="off"
+        @client.valid="False" if $APP_CONFIG.private_server.to_s.upcase == "ON" and self.is_4S!=true
         #this must not be updated in onld clients from here
         #pp @client
 
@@ -919,7 +995,11 @@ class SiriProxy::Connection < EventMachine::Connection
             @assistant.assistantid=@loadedassistant
             @assistant.speechid=@loadedspeechid
             @assistant.client_apple_account_id=@client.appleAccountid
-            @assistant.key_id=@key.id #suspicius
+            if @key.id != nil
+              @assistant.key_id=@key.id
+            else
+              @assistant.key_id=0
+            end
             @assistant.devicetype=@devicetype
             @assistant.last_ip=@clientip
             if  $assistantDao.check_duplicate(@assistant) #Should never  find a duplicate i think so
@@ -990,13 +1070,17 @@ class SiriProxy::Connection < EventMachine::Connection
             #Lets record the assistants, and verify users
             #will not get in here if the private is on and user is not valid
             #Also i know that the users are already checked but the double check comes only due to that i didnt have time to clean this up
-            if  object["class"]=="AssistantCreated" and self.other_connection.key != nil   and self.other_connection.client!=nil and self.other_connection.createassistant==true
+            if  object["class"]=="AssistantCreated" and self.other_connection.client!=nil and self.other_connection.createassistant==true
               puts "[Info - SiriProxy] Creating new Assistant..."
               pp object
               @assistant=Assistant.new
               @assistant.assistantid=object["properties"]["assistantId"]
               @assistant.speechid=object["properties"]["speechId"]
-              @assistant.key_id=self.other_connection.key.id
+              if self.other_connection.key.id != nil
+                @assistant.key_id=self.other_connection.key.id
+              else
+                @assistant.key_id=0
+              end
               @assistant.devicetype=self.other_connection.devicetype
               @assistant.last_ip=self.other_connection.clientip
               pp self.other_connection.client if $LOG_LEVEL > 2
